@@ -1,0 +1,160 @@
+#!/bin/ksh
+#@
+#@ Download check_postgres.pl from http://pbox.si.socgen/confluence/download/attachments/34308303/check_postgres.pl
+#@ Copy check_postgres.pl into /produits/admindb/patrol/KM/POSTGRES-SG
+#@
+#@ resultat:
+#@      A|POSTGRES
+#@      I|POC_dmrtipoc
+#@      P|ConnectCodeRetour|0
+#@      P|SharedPoolAllocatePct|84
+#@      P|SharedPoolSizeMo|144
+#@      P|ConnectStatus|0|
+#@      P|SharedPoolStatus|1|ANNOTATE| La taille de la shared pool est 144 Mo et elle est occupe a 84 %
+#@      P|TablespaceStatus|0|
+#@      I|CQFF_hcqffcps
+#@      ...
+#@
+#@      Seuls les Parametres ...Status sont supervises, les autres sont seulement historises
+#@
+#@       ParamStatus = 0 : no problem encountered on this control
+#@                     1 : a warning is encountered for this parameter
+#@                     2 : a severe alert is encountered
+#@                     3 : a problem is encountered using this KM
+#@
+#@
+################################################################################
+#set -x
+
+KM="POSTGRES-SG"
+REP_PROJET="/produits/admindb/patrol/KM/$KM/"
+export PERL5LIB="$REP_PROJET"
+CHECK_POSTGRESQL="$REP_PROJET/check_postgres.pl"
+DATEHEURE=$(date +%Y%m%d%H%M%S)
+
+EXEC_ACTION()
+{
+     ACTION_NAME=$1
+     PARAMS="${@:2}"
+     MESSAGE=`perl $CHECK_POSTGRESQL -p $PGPORT --action=$ACTION_NAME $PARAMS >&1 2>/dev/null`
+     ACTION_STATUS=$?
+     if [ $ACTION_STATUS -eq 0 ]; then
+        echo "P|$ACTION_NAME|$ACTION_STATUS"
+     else
+        # format an Annotate message that is using more than a line, replacing carriage return by \n
+        ANNOTATE=`echo $MESSAGE | awk '{printf ("%s%s",$0,"\\\\n")}' `
+        # display the Annotate message
+        echo "P|$ACTION_NAME|$ACTION_STATUS|ANNOTATE|$ANNOTATE"
+     fi
+     return $ACTION_STATUS
+}
+
+echo "A|$KM"
+
+# we go to the FS where Postgres Database are
+cd /produits/pgsql/env/ 2> /dev/null
+
+# for each "env" file present in the directory "/produits/pgsql/env" we're searching for files that start with "env_*",
+# in these files, environment variables are loaded
+for POSTGRES_INSTANCE in env_*
+do
+    if [ -f /produits/pgsql/env/$POSTGRES_INSTANCE ]; then
+        . /produits/pgsql/env/$POSTGRES_INSTANCE 2>&1 > /dev/null
+        echo "I|$DBNAME"
+        TRACE="$REP_KM_PROJET/${KM}_${DBNAME}.trace"
+
+        EXEC_ACTION connection
+
+        if [ $ACTION_STATUS -eq 0 ]; then
+           EXEC_ACTION disk_space --warning='85%' --critical='92%'
+           EXEC_ACTION backends --warning='90%' --critical='95%'  --exclude=template0,template1,pgbench
+           EXEC_ACTION database_size --warning=53687091200 --exclude=template0,template1,pgbench
+           EXEC_ACTION commitratio --warning='90%' --critical='80%' --exclude=template0,template1,,pgbench
+           EXEC_ACTION hitratio --warning='90%' --critical='80%' --exclude=template0,template1,pgbench
+           EXEC_ACTION sequence --warning='85%' --critical='95%'
+                                set -A wal $(psql -qAtXF " " -c "SELECT current_setting('archive_mode')::BOOLEAN AND (last_failed_wal IS NULL OR last_failed_wal <= last_archived_wal) AS is_archiving,CAST (archived_count AS NUMERIC)
+        / EXTRACT (EPOCH FROM age(now(), stats_reset))
+        AS current_archived_wals_per_second
+FROM pg_stat_archiver")
+
+        echo -n "P|archive_wal|"
+        [ ${wal[0]} -ne "t" ] && echo -n "2|ANNOTATE|Issue with archiving WALs, please check postgreSQL logs" || echo -n  "0"
+        echo ""
+
+        eval "$(df -Pm $BASE/wal | awk 'NR==2 {printf "wal_fs_size=%d wal_fs_used=%d wal_fs_available=%d", $2, $3, $4}')"
+
+        EstimatedSizeWal2Days=$((${wal[1]} * 16 * 3600 * 24 * 2))
+        EstimatedSizeWal2Days=$(printf "%.0f\n" $EstimatedSizeWal2Days) # In Megabytes
+
+        echo -n "P|archive_size_2days|"
+        [ $EstimatedSizeWal2Days -ge $wal_fs_size ] && echo -n "1|ANNOTATE| Size FS for WALs is under estimated to keep 2 days of activity" || echo -n "0"
+        echo ""
+
+                if [ "${CLUSTERHOST:-unset}" != "unset" ]; then
+                        ACTION_NAME=hot_standby_delay
+                        MESSAGE=`perl $CHECK_POSTGRESQL -p $PGPORT --action=$ACTION_NAME --dbhost=$CLUSTERHOST --critical='16777594 and 10 minutes' >&1 2>/dev/null`
+                        ACTION_STATUS=$?
+                        if [ $ACTION_STATUS -eq 0 ]; then
+                                echo "P|$ACTION_NAME|$ACTION_STATUS"
+                        else
+                                ANNOTATE=`echo $MESSAGE | awk '{printf ("%s%s",$0,"\\\\n")}' `
+                                echo "P|$ACTION_NAME|$ACTION_STATUS|ANNOTATE|$ANNOTATE"
+                        fi
+                        unset CLUSTERHOST
+                fi
+
+        fi
+        # check if repmgr is configured
+        if [[ -e "$BASE/admin/repmgr.conf" ]] then
+                echo -n "P|RepmgrdStatus|"
+                if [[ -e "$BASE/var/repmgr.pid" ]] then
+                        ps -p $(cat $BASE/var/repmgr.pid) > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                                echo -n "0"
+                        else
+                                echo -n "2|ANNOTATE|repmgrd is not running"
+                        fi
+                else
+                        echo -n "2|ANNOTATE|repmgrd is not running"
+                fi
+                echo ""
+        fi
+
+        if [[ -e "$BASE/admin/repmgr_witness.conf" ]] then
+                echo -n "P|RepmgrdWitnessStatus|"
+                if [[ -e "$BASE/var/repmgr_witness.pid" ]] then
+                        ps -p $(cat $BASE/var/repmgr_witness.pid) > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                                echo -n "0"
+                        else
+                                echo -n "2|ANNOTATE|repmgrd_witness is not running"
+                        fi
+                else
+                        echo -n "2|ANNOTATE|repmgrd_witness is not running"
+                fi
+                echo ""
+        fi
+
+    fi
+
+done
+
+        if [[ -e "/produits/pgsql/pgbouncer/pgbouncer.ini" ]] then
+                                         echo "I|PgBouncer"
+                echo -n "P|PgbouncerStatus|"
+                if [[ -e "/produits/pgsql/pgbouncer/pgbouncer.pid" ]] then
+                        ps -p $(cat /produits/pgsql/pgbouncer/pgbouncer.pid) > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                                echo -n "0"
+                        else
+                                echo -n "2|ANNOTATE|pgbouncer is not running"
+                        fi
+                else
+                        echo -n "2|ANNOTATE|pgbouncer is not running"
+                fi
+                echo ""
+        fi
+
+
+# Sortie
+exit 0

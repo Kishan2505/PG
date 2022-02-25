@@ -1,0 +1,52 @@
+# -----------------------------
+# PostgreSQL configuration file
+# Team : RESG/GTS/RET/MDB/DBA
+# -----------------------------
+
+listen_addresses = '' # put applicatif ip here and change DB_NAME
+port = 12400 # plage => 12400 à 12430
+max_connections = 100 # chaque connexion coute 400 octets de mémoire partagée + la taille du lock space
+superuser_reserved_connections = 3
+password_encryption = on
+shared_buffers = 128MB # increase to 1/4 of system memory
+dynamic_shared_memory_type = posix
+logging_collector = on		
+log_destination = 'csvlog'
+log_directory = '/bases/pgsql/DB_NAME/var/log'
+log_filename = 'DB_NAME-%Y-%m-%d_%H%M%S.log'	
+log_file_mode = 0644 # Patrol User can check logfiles
+log_truncate_on_rotation = on
+log_rotation_age = 1d # logfiles history over 35 days 
+log_rotation_size = 250MB
+log_timezone = 'Europe/Paris'
+log_checkpoints = on
+log_lock_waits = on
+log_autovacuum_min_duration = 5000
+log_statement = ddl
+log_lock_waits = on
+datestyle = 'iso, mdy'
+timezone = 'Europe/Paris'
+lc_messages = 'C'
+lc_monetary = 'C'
+lc_numeric = 'C'
+lc_time = 'C'
+default_text_search_config = 'pg_catalog.english'
+# Archive Complited Wal segments to $BASE/wal/
+hot_standby=on # to be able to query db during the recovery
+max_wal_senders=3
+wal_level = hot_standby
+archive_mode = on
+archive_command = 'test ! -f /bases/pgsql/DB_NAME/wal/%f && cp %p /bases/pgsql/DB_NAME/wal/%f'
+archive_timeout = 900
+# Activate pg_stat_statments
+shared_preload_libraries = 'pg_stat_statements'
+track_activity_query_size = 2048 # increase the max site of the query strings recorded
+pg_stat_statements.track = all
+
+autovacuum_max_workers = 4 # increase to number of CPUs
+autovacuum_naptime = 15
+checkpoint_completion_target = 0.9
+effective_cache_size =  1024MB # increase to 3/4 of system memory
+maintenance_work_mem = 512MB # increase to effective_cache_size / (2 * max_worker_processes)
+max_worker_processes = 4 # increase to number of CPUs
+work_mem = 12MB # increase to effective_cache_size / (8 * max_connections)
